@@ -68,17 +68,62 @@ php test-api.php
 3. Default product image is set to a specific URL if no image exists
 4. The plugin schedules hourly automatic syncs if enabled
 
-### Brand/Organization Handling
-Currently stores organization as post meta `_product_brand`. To properly integrate with WooCommerce brand plugins:
-1. Identify which brand plugin is installed (e.g., `product_brand`, `pwb-brand`, `yith_product_brand`)
-2. Create brand taxonomy terms from organizations
-3. Assign products to brand terms instead of just meta
+### Brand/Organization Handling ⚠️ NEEDS IMPROVEMENT
+Currently stores organization as post meta `_product_brand`. **This is a major limitation that needs to be fixed.**
+
+**Current Problem:**
+- Organizations from tasks are only stored as simple post meta (`_product_brand`)
+- No integration with WooCommerce brand systems or plugins
+- Missing connection to rich organization data (with images) from Organizations Manager plugin
+- No proper brand taxonomy, browsing, or brand pages
+
+**PRIORITY FEATURE TO ADD:**
+**Integrate Organizations from MongoDB as WooCommerce Brands**
+
+1. **Fetch Organization Data**: Use Organizations Manager API (`/api/organizations`) to get full organization details including:
+   - Organization name, location, contact info
+   - **Image URLs** (now available from GitHub: `https://raw.githubusercontent.com/loukach/joyfromgiving-images/main/organizations/`)
+   - Description and metadata
+
+2. **Create WooCommerce Brand Integration**:
+   - Detect installed brand plugin (e.g., `product_brand`, `pwb-brand`, `yith_product_brand`)
+   - Create brand taxonomy terms from organization data
+   - Set brand images using organization imageUrl from MongoDB
+   - Assign products to proper brand terms instead of just meta
+
+3. **Implementation Steps**:
+   ```php
+   // Example implementation needed:
+   function sync_organizations_as_brands() {
+       $organizations = fetch_organizations_from_api();
+       foreach ($organizations as $org) {
+           $brand_term = wp_insert_term($org['organizationName'], 'product_brand');
+           // Set brand image from GitHub repository
+           if ($org['imageUrl']) {
+               update_term_meta($brand_term['term_id'], 'thumbnail_id', attach_brand_image($org['imageUrl']));
+           }
+       }
+   }
+   ```
+
+4. **Benefits of This Integration**:
+   - Products properly linked to organization brands with images
+   - Brand browsing and filtering in WooCommerce
+   - Professional brand pages with organization details
+   - Consistent brand experience across the platform
+   - Leverage existing Organizations Manager data and images
 
 ### Future Improvements
-1. Implement proper WooCommerce brand taxonomy integration
-2. Add category ID to name mapping if API returns numeric IDs
+1. **🚨 PRIORITY**: Implement proper WooCommerce brand taxonomy integration (see Brand/Organization Handling above)
+2. Add category ID to name mapping if API returns numeric IDs  
 3. Handle organization deduplication for brands
 4. Add more robust error handling and recovery
+
+### Related Components
+- **Organizations Manager Plugin**: Already manages organization CRUD with images
+- **MongoDB Organizations**: Contains rich organization data with imageUrl field
+- **GitHub Images Repository**: `https://github.com/loukach/joyfromgiving-images` contains all organization logos
+- **Organizations → Tasks → Products**: Complete data flow that needs proper brand integration
 
 ### Useful Commands
 ```bash

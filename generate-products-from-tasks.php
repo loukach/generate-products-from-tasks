@@ -2,7 +2,7 @@
 /*
 Plugin Name: Generate WooCommerce Products from Tasks
 Description: Creates WooCommerce products from tasks in MongoDB (via render.com API)
-Version: 1.0.0
+Version: 2.4.0
 Author: Lucas Gros
 */
 
@@ -54,6 +54,9 @@ class Render_Tasks_To_Products {
         // Add AJAX handlers
         add_action('wp_ajax_manual_sync_products', array($this, 'handle_manual_sync'));
         add_action('wp_ajax_fetch_tasks_for_products', array($this, 'fetch_tasks'));
+
+        // Defensive filter to prevent numeric category creation
+        add_filter('pre_insert_term', array($this, 'prevent_numeric_categories'), 1, 2);
 
         // Add admin scripts and styles
         add_action('admin_enqueue_scripts', array($this, 'enqueue_admin_assets'));
@@ -166,7 +169,7 @@ class Render_Tasks_To_Products {
         wp_send_json_success($tasks);
     }
 
-    public function sync_tasks_to_products() {
+    public function sync_tasks_to_products($limit = null) {
         error_log('[Generate Products] Starting sync from: ' . $this->endpoints['tasks']);
         
         $response = wp_remote_get($this->endpoints['tasks']);
@@ -200,6 +203,10 @@ class Render_Tasks_To_Products {
         $skipped_count = 0;
 
         foreach ($tasks as $index => $task) {
+            // Stop if we've reached the limit
+            if ($limit !== null && $index >= $limit) {
+                break;
+            }
             // Debug first task structure
             if ($index === 0) {
                 error_log('[Generate Products] First task structure: ' . print_r(array_keys($task), true));
@@ -322,29 +329,52 @@ class Render_Tasks_To_Products {
         $category_ids = array();
         
         foreach ($categories as $category_name) {
-            // Debug: Check if category is numeric
             error_log('[Generate Products] Processing category: ' . $category_name . ' (type: ' . gettype($category_name) . ')');
             
-            // Use category name exactly as it comes from the API
+            // Check if category already exists
             $term = term_exists($category_name, 'product_cat');
+            error_log('[Generate Products] term_exists result: ' . print_r($term, true) . ' (type: ' . gettype($term) . ')');
             
             if (!$term) {
+                // Category doesn't exist, create it
+                error_log('[Generate Products] Creating new category: ' . $category_name);
                 $term = wp_insert_term($category_name, 'product_cat');
-                error_log('[Generate Products] Created new category: ' . $category_name);
-            }
-            
-            if (!is_wp_error($term)) {
-                $category_ids[] = is_array($term) ? $term['term_id'] : $term;
+                error_log('[Generate Products] wp_insert_term result: ' . print_r($term, true));
+                
+                if (!is_wp_error($term)) {
+                    $category_ids[] = $term['term_id'];
+                    error_log('[Generate Products] Added term_id to array: ' . $term['term_id']);
+                } else {
+                    error_log('[Generate Products] Failed to create category ' . $category_name . ': ' . $term->get_error_message());
+                }
             } else {
-                error_log('[Generate Products] Failed to create category ' . $category_name . ': ' . $term->get_error_message());
+                // Category exists
+                $term_id = is_array($term) ? intval($term['term_id']) : intval($term);
+                $category_ids[] = $term_id;
+                error_log('[Generate Products] Using existing category: ' . $category_name . ' (ID: ' . $term_id . ')');
             }
         }
         
         if (!empty($category_ids)) {
+            error_log('[Generate Products] About to call wp_set_object_terms with IDs: ' . print_r($category_ids, true));
+            error_log('[Generate Products] Category IDs data types: ' . print_r(array_map('gettype', $category_ids), true));
+            
+            // Verify terms exist before setting
+            foreach ($category_ids as $cat_id) {
+                $term_check = get_term($cat_id, 'product_cat');
+                if (is_wp_error($term_check) || !$term_check) {
+                    error_log('[Generate Products] WARNING: Term ID ' . $cat_id . ' does not exist or is invalid');
+                } else {
+                    error_log('[Generate Products] Confirmed term exists: ID=' . $cat_id . ', Name=' . $term_check->name);
+                }
+            }
+            
             $result = wp_set_object_terms($product_id, $category_ids, 'product_cat');
+            
             if (is_wp_error($result)) {
                 error_log('[Generate Products] Failed to set categories: ' . $result->get_error_message());
             } else {
+                error_log('[Generate Products] wp_set_object_terms returned: ' . print_r($result, true));
                 error_log('[Generate Products] Successfully set ' . count($category_ids) . ' categories');
             }
         }
@@ -439,14 +469,16 @@ class Render_Tasks_To_Products {
             return;
         }
 
-        $result = $this->sync_tasks_to_products();
+        $limit = isset($_POST['limit']) && is_numeric($_POST['limit']) ? intval($_POST['limit']) : null;
+        $result = $this->sync_tasks_to_products($limit);
         
         if ($result) {
             wp_send_json_success(array(
                 'message' => sprintf('Sync completed: %d products synced, %d errors', 
                     $result['synced'], 
                     $result['errors']
-                )
+                ),
+                'debug' => $result['debug'] ?? array()
             ));
         } else {
             wp_send_json_error('Sync failed');
@@ -457,6 +489,15 @@ class Render_Tasks_To_Products {
         if (get_option('render_products_auto_sync', true) && !wp_next_scheduled('product_sync_hourly')) {
             wp_schedule_event(time(), 'hourly', 'product_sync_hourly');
         }
+    }
+
+    public function prevent_numeric_categories($term, $taxonomy) {
+        if ($taxonomy === 'product_cat' && is_numeric($term) && strlen($term) > 2) {
+            error_log('[BLOCKED] Numeric category creation attempt: ' . $term . ' for taxonomy: ' . $taxonomy);
+            error_log('[BLOCKED] Stack trace: ' . wp_debug_backtrace_summary());
+            return new WP_Error('invalid_term_name', 'Numeric category names not allowed: ' . $term);
+        }
+        return $term;
     }
 
     public function render_admin_page() {
@@ -542,6 +583,14 @@ class Render_Tasks_To_Products {
                 <div class="render-products-actions">
                     <h2>Actions</h2>
                     <p>
+                        <label for="sync-limit">Tasks to sync:</label>
+                        <select id="sync-limit" style="margin: 0 10px;">
+                            <option value="">All tasks</option>
+                            <option value="1">1 task</option>
+                            <option value="5">5 tasks</option>
+                            <option value="10">10 tasks</option>
+                            <option value="20">20 tasks</option>
+                        </select>
                         <button type="button" class="button button-primary" id="manual-sync-btn">
                             Sync Tasks Now
                         </button>

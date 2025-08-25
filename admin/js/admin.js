@@ -7,12 +7,15 @@ jQuery(document).ready(function($) {
         $button.prop('disabled', true).text('Syncing...');
         $status.html('<p>Synchronizing tasks to products...</p>');
         
+        var limit = $('#sync-limit').val();
+        
         $.ajax({
             url: renderProductsAjax.ajaxurl,
             type: 'POST',
             data: {
                 action: 'manual_sync_products',
-                nonce: renderProductsAjax.nonce
+                nonce: renderProductsAjax.nonce,
+                limit: limit
             },
             success: function(response) {
                 if (response.success) {
