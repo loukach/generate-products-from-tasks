@@ -5,6 +5,7 @@ A WordPress plugin that automatically creates WooCommerce products from tasks fe
 ## Features
 
 - **Automatic Sync**: Fetches tasks from API and creates WooCommerce products
+- **Brand Integration**: Syncs organizations to WooCommerce brands with automatic logo download
 - **Smart Mapping**: Maps task data to product attributes, categories, and tags
 - **Update Handling**: Updates existing products when tasks change
 - **Category Management**: Creates WooCommerce product categories from task categories
@@ -15,9 +16,10 @@ A WordPress plugin that automatically creates WooCommerce products from tasks fe
 
 - WordPress 5.0+
 - WooCommerce 4.0+
+- **Perfect WooCommerce Brands plugin** (for brand integration)
 - PHP 7.4+
 - cURL enabled
-- Access to remote API endpoint
+- Access to remote API endpoints
 
 ## Installation
 
@@ -103,8 +105,11 @@ Navigate to **WooCommerce → Tasks to Products** in your WordPress admin.
 ### Manual Sync
 
 1. Go to **WooCommerce → Tasks to Products**
-2. Click **"Sync Tasks Now"**
-3. Monitor the sync status and results
+2. Click **"Sync Tasks Now"** (syncs both tasks and brands automatically)
+3. Monitor the sync status and results including:
+   - Products synced/updated
+   - Brands created  
+   - Brand images downloaded
 
 ### Automatic Sync
 
@@ -119,8 +124,8 @@ Navigate to **WooCommerce → Tasks to Products** in your WordPress admin.
 |------------|-----------------|
 | `title` | Product Name |
 | `description` | Product Description |
-| `organization` | Product Brand |
-| `categories` | Product Categories (with emoji mapping) |
+| `organization` | **Product Brand** (PWB taxonomy) |
+| `categories` | Product Categories |
 | `tags` | Product Tags |
 | `location` | Product Attribute |
 | `region` | Product Attribute |
@@ -130,15 +135,18 @@ Navigate to **WooCommerce → Tasks to Products** in your WordPress admin.
 | `skills` | Product Attribute |
 | `traits` | Product Attribute |
 
-### Category Mapping
+### Brand Integration
 
-Categories are mapped with emojis for better visual organization:
+Organizations from MongoDB are automatically synced to Perfect WooCommerce Brands:
 
-- `Sports & Recreation` → `⚽ Sports & Recreation`
-- `Environmental` → `🌱 Environmental`
-- `Educational` → `🎓 Educational`
-- `Arts & Culture` → `🎨 Arts & Culture`
-- And more...
+- **Organization Name** → Brand name  
+- **Organization Description** → Brand description
+- **Organization Logo URL** → Brand image (auto-downloaded)
+- **MongoDB ID** → Stored for linking
+
+### Category Processing
+
+Categories from tasks are created exactly as received from the API, without modification.
 
 ## Troubleshooting
 
@@ -147,19 +155,24 @@ Categories are mapped with emojis for better visual organization:
 1. **"WooCommerce not found" error**
    - Install and activate WooCommerce plugin first
 
-2. **"API connection failed"**
+2. **"Perfect WooCommerce Brands not found" error**  
+   - Install and activate Perfect WooCommerce Brands plugin
+   - Brand sync will be skipped if PWB is not available
+
+3. **"API connection failed"**
    - Check your `JOY_AI_BACKEND_URL` constant
    - Verify API endpoint is accessible
    - Run `php test-api.php` to diagnose
 
-3. **"No products created"**
+4. **"No products created"**
    - Check WordPress debug log for errors
    - Verify tasks have `_id` and `title` fields
    - Ensure tasks have `status: "active"`
 
-4. **"Categories not appearing"**
-   - Check that task categories are arrays
-   - Verify WooCommerce product categories are enabled
+5. **"Brand images not downloading"**
+   - Check internet connectivity
+   - Verify organization `imageUrl` fields are valid
+   - Images will be skipped but brands still created
 
 ### Debug Information
 
@@ -206,6 +219,18 @@ For issues or questions:
 4. Contact the plugin developer with specific error messages
 
 ## Changelog
+
+### Version 2.7.0 (Current)
+- **NEW**: Brand integration with Perfect WooCommerce Brands
+- **NEW**: Automatic organization logo download from GitHub
+- **NEW**: Enhanced admin UI with detailed sync statistics
+- **IMPROVED**: Integrated brand sync with main task sync operation
+- **IMPROVED**: Comprehensive error handling and logging
+
+### Version 2.6.x
+- Fixed category display issues (numeric categories)
+- Added task limit selector for testing
+- Enhanced debugging and error logging
 
 ### Version 1.0.0
 - Initial release

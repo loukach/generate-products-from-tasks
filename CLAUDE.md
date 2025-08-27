@@ -47,8 +47,13 @@ generate-products-from-tasks-clean/
 
 #### Running a Sync
 1. Go to WooCommerce → Tasks to Products in WordPress admin
-2. Click "Sync Tasks Now" button
-3. Check WordPress debug.log for detailed sync information
+2. Click "Sync Tasks Now" button (creates/updates products)
+3. Click "Sync Brands Now" button (creates brands from organizations)
+4. Check WordPress debug.log for detailed sync information
+
+#### Brand Integration Requirements
+- Perfect WooCommerce Brands plugin must be installed and active
+- Run brand sync after task sync to ensure products exist for brand assignment
 
 #### Debugging Category Issues
 The plugin logs category processing:
@@ -68,56 +73,33 @@ php test-api.php
 3. Default product image is set to a specific URL if no image exists
 4. The plugin schedules hourly automatic syncs if enabled
 
-### Brand/Organization Handling ⚠️ NEEDS IMPROVEMENT
-Currently stores organization as post meta `_product_brand`. **This is a major limitation that needs to be fixed.**
+### Brand/Organization Handling ✅ IMPLEMENTED
+Organizations from MongoDB are now integrated with Perfect WooCommerce Brands (PWB) plugin.
 
-**Current Problem:**
-- Organizations from tasks are only stored as simple post meta (`_product_brand`)
-- No integration with WooCommerce brand systems or plugins
-- Missing connection to rich organization data (with images) from Organizations Manager plugin
-- No proper brand taxonomy, browsing, or brand pages
+**Current Implementation:**
+- Organizations sync from `/api/organizations` to PWB brands (`pwb-brand` taxonomy)
+- Products are assigned to brands based on their organization  
+- **Brand images automatically downloaded** from GitHub repository during sync
+- MongoDB organization IDs stored in term meta for reliable linking
 
-**PRIORITY FEATURE TO ADD:**
-**Integrate Organizations from MongoDB as WooCommerce Brands**
+**How It Works:**
+1. **Brand Sync**: "Sync Tasks Now" automatically syncs organizations to PWB brands
+2. **Product Assignment**: Products with organization meta get assigned to matching brands
+3. **Image Download**: Organization logos automatically downloaded from GitHub
+4. **No Duplicates**: Existing brands are not modified (preserves manual edits)
 
-1. **Fetch Organization Data**: Use Organizations Manager API (`/api/organizations`) to get full organization details including:
-   - Organization name, location, contact info
-   - **Image URLs** (now available from GitHub: `https://raw.githubusercontent.com/loukach/joyfromgiving-images/main/organizations/`)
-   - Description and metadata
-
-2. **Create WooCommerce Brand Integration**:
-   - Detect installed brand plugin (e.g., `product_brand`, `pwb-brand`, `yith_product_brand`)
-   - Create brand taxonomy terms from organization data
-   - Set brand images using organization imageUrl from MongoDB
-   - Assign products to proper brand terms instead of just meta
-
-3. **Implementation Steps**:
-   ```php
-   // Example implementation needed:
-   function sync_organizations_as_brands() {
-       $organizations = fetch_organizations_from_api();
-       foreach ($organizations as $org) {
-           $brand_term = wp_insert_term($org['organizationName'], 'product_brand');
-           // Set brand image from GitHub repository
-           if ($org['imageUrl']) {
-               update_term_meta($brand_term['term_id'], 'thumbnail_id', attach_brand_image($org['imageUrl']));
-           }
-       }
-   }
-   ```
-
-4. **Benefits of This Integration**:
-   - Products properly linked to organization brands with images
-   - Brand browsing and filtering in WooCommerce
-   - Professional brand pages with organization details
-   - Consistent brand experience across the platform
-   - Leverage existing Organizations Manager data and images
+**Benefits Achieved:**
+- Products properly linked to organization brands
+- Brand browsing and filtering in WooCommerce
+- Consistent brand experience across the platform
+- Leverages existing MongoDB organizations data
 
 ### Future Improvements
-1. **🚨 PRIORITY**: Implement proper WooCommerce brand taxonomy integration (see Brand/Organization Handling above)
-2. Add category ID to name mapping if API returns numeric IDs  
-3. Handle organization deduplication for brands
-4. Add more robust error handling and recovery
+1. Add category ID to name mapping if API returns numeric IDs  
+2. Handle organization deduplication for brands
+3. Add more robust error handling and recovery
+4. Add rollback functionality for brand sync
+5. Add image retry mechanism for failed downloads
 
 ### Related Components
 - **Organizations Manager Plugin**: Already manages organization CRUD with images

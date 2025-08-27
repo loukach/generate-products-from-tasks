@@ -19,7 +19,41 @@ jQuery(document).ready(function($) {
             },
             success: function(response) {
                 if (response.success) {
-                    $status.html('<div class="notice notice-success"><p>' + response.data.message + '</p></div>');
+                    var message = '<p><strong>' + response.data.message + '</strong></p>';
+                    
+                    // Add detailed breakdown if available
+                    if (response.data.details) {
+                        var details = response.data.details;
+                        message += '<ul>';
+                        message += '<li>📦 Products: ' + details.products_synced + ' synced';
+                        if (details.products_errors > 0) message += ', ' + details.products_errors + ' errors';
+                        if (details.products_skipped > 0) message += ', ' + details.products_skipped + ' skipped';
+                        message += '</li>';
+                        
+                        if (typeof details.brands_synced !== 'undefined') {
+                            message += '<li>🏷️ Brands: ' + details.brands_synced + ' synced';
+                            if (details.brands_errors > 0) message += ', ' + details.brands_errors + ' errors';
+                            message += '</li>';
+                            
+                            // Add image statistics if available
+                            if (response.data.details.brand_images_attempted > 0) {
+                                message += '<li>🖼️ Brand Images: ' + response.data.details.brand_images_success + 
+                                         '/' + response.data.details.brand_images_attempted + ' downloaded</li>';
+                            }
+                        }
+                        message += '</ul>';
+                        
+                        // Show brand details if available
+                        if (response.data.brand_details && response.data.brand_details.length > 0) {
+                            message += '<p><small><strong>Brand details:</strong> ' + response.data.brand_details.join(', ');
+                            if (response.data.brand_details.length === 5) {
+                                message += ' (and more...)';
+                            }
+                            message += '</small></p>';
+                        }
+                    }
+                    
+                    $status.html('<div class="notice notice-success">' + message + '</div>');
                 } else {
                     $status.html('<div class="notice notice-error"><p>Error: ' + response.data + '</p></div>');
                 }
@@ -83,6 +117,46 @@ jQuery(document).ready(function($) {
             },
             complete: function() {
                 $button.prop('disabled', false).text('Fetch Tasks');
+            }
+        });
+    });
+    
+    // Brand sync button
+    $('#sync-brands-btn').on('click', function() {
+        var $button = $(this);
+        var $status = $('#brands-status');
+        
+        $button.prop('disabled', true).text('Syncing Brands...');
+        $status.html('<p>Synchronizing organizations to brands...</p>');
+        
+        $.ajax({
+            url: renderProductsAjax.ajaxurl,
+            type: 'POST',
+            data: {
+                action: 'sync_brands',
+                nonce: renderProductsAjax.nonce
+            },
+            success: function(response) {
+                if (response.success) {
+                    var message = response.data.message;
+                    if (response.data.results && response.data.results.length > 0) {
+                        message += '<br><small>Details: ' + response.data.results.slice(0, 5).join(', ');
+                        if (response.data.results.length > 5) {
+                            message += ' and ' + (response.data.results.length - 5) + ' more...';
+                        }
+                        message += '</small>';
+                    }
+                    $status.html('<div class="notice notice-success"><p>' + message + '</p></div>');
+                } else {
+                    var errorMsg = response.data ? (response.data.message || response.data) : 'Unknown error';
+                    $status.html('<div class="notice notice-error"><p>Error: ' + errorMsg + '</p></div>');
+                }
+            },
+            error: function() {
+                $status.html('<div class="notice notice-error"><p>Failed to sync brands.</p></div>');
+            },
+            complete: function() {
+                $button.prop('disabled', false).text('Sync Brands Now');
             }
         });
     });

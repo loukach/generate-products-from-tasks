@@ -2,7 +2,7 @@
 /*
 Plugin Name: Generate WooCommerce Products from Tasks
 Description: Creates WooCommerce products from tasks in MongoDB (via render.com API)
-Version: 2.4.0
+Version: 2.7.0
 Author: Lucas Gros
 */
 
@@ -38,7 +38,8 @@ class Render_Tasks_To_Products {
 
     public function __construct() {
         $this->endpoints = [
-            'tasks' => $this->api_url . '/tasks/full'
+            'tasks' => $this->api_url . '/tasks/full',
+            'organizations' => $this->api_url . '/organizations'
         ];
 
         // Add admin menu
@@ -54,6 +55,7 @@ class Render_Tasks_To_Products {
         // Add AJAX handlers
         add_action('wp_ajax_manual_sync_products', array($this, 'handle_manual_sync'));
         add_action('wp_ajax_fetch_tasks_for_products', array($this, 'fetch_tasks'));
+        add_action('wp_ajax_sync_brands', array($this, 'handle_sync_brands'));
 
         // Defensive filter to prevent numeric category creation
         add_filter('pre_insert_term', array($this, 'prevent_numeric_categories'), 1, 2);
@@ -237,13 +239,42 @@ class Render_Tasks_To_Products {
             }
         }
 
-        error_log("[Generate Products] Sync completed: $synced_count synced, $error_count errors, $skipped_count skipped");
+        error_log("[Generate Products] Task sync completed: $synced_count synced, $error_count errors, $skipped_count skipped");
+        
+        // Now run brand sync automatically
+        error_log("[Generate Products] Starting automatic brand sync...");
+        $brand_result = $this->sync_organizations_to_brands();
+        
+        $brands_synced = 0;
+        $brands_errors = 0;
+        $brand_message = '';
+        
+        if ($brand_result['success']) {
+            $brands_synced = $brand_result['synced'];
+            $brands_errors = $brand_result['errors'];
+            $brand_message = "Brands: {$brands_synced} synced, {$brands_errors} errors";
+        } else {
+            $brands_errors = 1;
+            $brand_message = "Brand sync failed: " . $brand_result['message'];
+        }
+        
+        // Combined results  
+        $total_errors = $error_count + $brands_errors;
+        $combined_message = "Tasks: {$synced_count} synced, {$error_count} errors | {$brand_message}";
+        
+        error_log("[Generate Products] Complete sync finished: {$combined_message}");
         
         return array(
             'synced' => $synced_count,
             'errors' => $error_count,
             'skipped' => $skipped_count,
-            'total' => count($tasks)
+            'total' => count($tasks),
+            'brands_synced' => $brands_synced,
+            'brands_errors' => $brands_errors,
+            'combined_message' => $combined_message,
+            'brand_details' => $brand_result['success'] ? $brand_result['results'] : array(),
+            'brand_images_attempted' => $brand_result['success'] ? ($brand_result['images_attempted'] ?? 0) : 0,
+            'brand_images_success' => $brand_result['success'] ? ($brand_result['images_success'] ?? 0) : 0
         );
     }
 
@@ -473,13 +504,35 @@ class Render_Tasks_To_Products {
         $result = $this->sync_tasks_to_products($limit);
         
         if ($result) {
-            wp_send_json_success(array(
-                'message' => sprintf('Sync completed: %d products synced, %d errors', 
-                    $result['synced'], 
-                    $result['errors']
-                ),
-                'debug' => $result['debug'] ?? array()
-            ));
+            // Use combined message if available, otherwise fall back to old format
+            $main_message = isset($result['combined_message']) ? 
+                $result['combined_message'] : 
+                sprintf('Sync completed: %d products synced, %d errors', $result['synced'], $result['errors']);
+            
+            $response_data = array(
+                'message' => $main_message,
+                'debug' => $result['debug'] ?? array(),
+                'details' => array(
+                    'products_synced' => $result['synced'],
+                    'products_errors' => $result['errors'],
+                    'products_skipped' => $result['skipped'] ?? 0,
+                    'total_tasks' => $result['total'] ?? 0
+                )
+            );
+            
+            // Add brand information if available
+            if (isset($result['brands_synced'])) {
+                $response_data['details']['brands_synced'] = $result['brands_synced'];
+                $response_data['details']['brands_errors'] = $result['brands_errors'];
+                $response_data['details']['brand_images_attempted'] = $result['brand_images_attempted'] ?? 0;
+                $response_data['details']['brand_images_success'] = $result['brand_images_success'] ?? 0;
+                
+                if (!empty($result['brand_details'])) {
+                    $response_data['brand_details'] = array_slice($result['brand_details'], 0, 5); // Show first 5
+                }
+            }
+            
+            wp_send_json_success($response_data);
         } else {
             wp_send_json_error('Sync failed');
         }
@@ -582,6 +635,7 @@ class Render_Tasks_To_Products {
 
                 <div class="render-products-actions">
                     <h2>Actions</h2>
+                    <p><strong>Complete Sync:</strong> Syncs tasks to products AND organizations to brands automatically.</p>
                     <p>
                         <label for="sync-limit">Tasks to sync:</label>
                         <select id="sync-limit" style="margin: 0 10px;">
@@ -598,6 +652,17 @@ class Render_Tasks_To_Products {
                     <div id="sync-status"></div>
                 </div>
 
+                <div class="render-products-brands">
+                    <h2>Brand Integration (Optional)</h2>
+                    <p><strong>Brands-Only Sync:</strong> Use this if you only want to sync organizations to brands without syncing tasks.</p>
+                    <p>
+                        <button type="button" class="button button-secondary" id="sync-brands-btn">
+                            Sync Brands Now
+                        </button>
+                    </p>
+                    <div id="brands-status"></div>
+                </div>
+
                 <div class="render-products-preview">
                     <h2>Tasks Preview</h2>
                     <p>
@@ -610,6 +675,287 @@ class Render_Tasks_To_Products {
             </div>
         </div>
         <?php
+    }
+
+    /**
+     * Sync organizations from MongoDB to PWB brands
+     */
+    public function sync_organizations_to_brands() {
+        error_log('[Generate Products - Brands] Starting organizations to brands sync - Version 2.7.0 with image support');
+        
+        // Check PWB plugin exists
+        if (!taxonomy_exists('pwb-brand')) {
+            error_log('[Generate Products - Brands] PWB plugin not found - pwb-brand taxonomy does not exist');
+            return array(
+                'success' => false,
+                'message' => 'Perfect WooCommerce Brands plugin not found',
+                'synced' => 0,
+                'errors' => 1
+            );
+        }
+        
+        // Fetch organizations from API (fixed: replaced fetch_api_data with wp_remote_get)
+        $response = wp_remote_get($this->endpoints['organizations']);
+        
+        if (is_wp_error($response)) {
+            error_log('[Generate Products - Brands] Failed to fetch organizations: ' . $response->get_error_message());
+            return array(
+                'success' => false,
+                'message' => 'Failed to fetch organizations: ' . $response->get_error_message(),
+                'synced' => 0,
+                'errors' => 1
+            );
+        }
+
+        $http_code = wp_remote_retrieve_response_code($response);
+        error_log('[Generate Products - Brands] Organizations API Response Code: ' . $http_code);
+        
+        if ($http_code !== 200) {
+            error_log('[Generate Products - Brands] Unexpected HTTP response code: ' . $http_code);
+            return array(
+                'success' => false,
+                'message' => 'Organizations API returned HTTP ' . $http_code,
+                'synced' => 0,
+                'errors' => 1
+            );
+        }
+
+        $body = wp_remote_retrieve_body($response);
+        $organizations = json_decode($body, true);
+        
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            error_log('[Generate Products - Brands] Invalid JSON response from organizations API: ' . json_last_error_msg());
+            return array(
+                'success' => false,
+                'message' => 'Invalid JSON response from organizations API',
+                'synced' => 0,
+                'errors' => 1
+            );
+        }
+        
+        if (!is_array($organizations)) {
+            error_log('[Generate Products - Brands] Organizations API response is not an array');
+            return array(
+                'success' => false,
+                'message' => 'Invalid organizations data format',
+                'synced' => 0,
+                'errors' => 1
+            );
+        }
+        
+        error_log('[Generate Products - Brands] Fetched ' . count($organizations) . ' organizations from API');
+        
+        $synced = 0;
+        $errors = 0;
+        $results = array();
+        $images_attempted = 0;
+        $images_success = 0;
+        
+        foreach ($organizations as $org) {
+            try {
+                // Skip if no organization name
+                if (empty($org['organizationName'])) {
+                    error_log('[Generate Products - Brands] Skipping organization with empty name');
+                    continue;
+                }
+                
+                $org_name = sanitize_text_field($org['organizationName']);
+                $org_id = isset($org['_id']['$oid']) ? $org['_id']['$oid'] : (isset($org['_id']) ? $org['_id'] : null);
+                
+                if (!$org_id) {
+                    error_log('[Generate Products - Brands] Skipping organization without ID: ' . $org_name);
+                    $errors++;
+                    continue;
+                }
+                
+                // Check if brand already exists
+                $existing_brand = term_exists($org_name, 'pwb-brand');
+                
+                if ($existing_brand) {
+                    // Brand exists, don't update
+                    $brand_id = is_array($existing_brand) ? $existing_brand['term_id'] : $existing_brand;
+                    error_log('[Generate Products - Brands] Using existing brand: ' . $org_name . ' (ID: ' . $brand_id . ')');
+                    $results[] = 'existing: ' . $org_name;
+                } else {
+                    // Create new brand
+                    $brand_args = array(
+                        'description' => isset($org['description']) ? sanitize_text_field($org['description']) : '',
+                        'slug' => sanitize_title($org_name)
+                    );
+                    
+                    $brand_result = wp_insert_term($org_name, 'pwb-brand', $brand_args);
+                    
+                    if (is_wp_error($brand_result)) {
+                        error_log('[Generate Products - Brands] Failed to create brand: ' . $org_name . ' - ' . $brand_result->get_error_message());
+                        $errors++;
+                        continue;
+                    }
+                    
+                    $brand_id = $brand_result['term_id'];
+                    
+                    // Store MongoDB ID for linking
+                    update_term_meta($brand_id, 'mongodb_org_id', $org_id);
+                    
+                    // Handle brand image if available
+                    if (!empty($org['imageUrl'])) {
+                        $images_attempted++;
+                        $image_result = $this->download_and_attach_brand_image($brand_id, $org['imageUrl'], $org_name);
+                        if ($image_result['success']) {
+                            $images_success++;
+                            error_log('[Generate Products - Brands] Set brand image for: ' . $org_name . ' (Attachment ID: ' . $image_result['attachment_id'] . ')');
+                        } else {
+                            error_log('[Generate Products - Brands] Failed to set image for ' . $org_name . ': ' . $image_result['message']);
+                        }
+                    }
+                    
+                    error_log('[Generate Products - Brands] Created new brand: ' . $org_name . ' (ID: ' . $brand_id . ')');
+                    $synced++;
+                    $results[] = 'created: ' . $org_name;
+                }
+                
+            } catch (Exception $e) {
+                error_log('[Generate Products - Brands] Exception processing organization ' . ($org['organizationName'] ?? 'unknown') . ': ' . $e->getMessage());
+                $errors++;
+            }
+        }
+        
+        // Now assign brands to existing products
+        $this->assign_brands_to_products();
+        
+        error_log('[Generate Products - Brands] Sync completed. Synced: ' . $synced . ', Errors: ' . $errors);
+        
+        return array(
+            'success' => true,
+            'message' => sprintf('Brand sync completed: %d brands synced, %d errors, %d/%d images', $synced, $errors, $images_success, $images_attempted),
+            'synced' => $synced,
+            'errors' => $errors,
+            'results' => $results,
+            'images_attempted' => $images_attempted,
+            'images_success' => $images_success
+        );
+    }
+    
+    /**
+     * Assign brands to existing products based on organization
+     */
+    private function assign_brands_to_products() {
+        error_log('[Generate Products - Brands] Starting product brand assignment');
+        
+        // Get all products that have organization meta
+        $products = get_posts(array(
+            'post_type' => 'product',
+            'posts_per_page' => -1,
+            'meta_query' => array(
+                array(
+                    'key' => '_product_brand',
+                    'compare' => 'EXISTS'
+                )
+            )
+        ));
+        
+        error_log('[Generate Products - Brands] Found ' . count($products) . ' products with organization data');
+        
+        $assigned = 0;
+        $errors = 0;
+        
+        foreach ($products as $product) {
+            $org_name = get_post_meta($product->ID, '_product_brand', true);
+            
+            if (empty($org_name)) {
+                continue;
+            }
+            
+            // Find matching brand by name
+            $brand = get_term_by('name', $org_name, 'pwb-brand');
+            
+            if (!$brand) {
+                error_log('[Generate Products - Brands] No brand found for organization: ' . $org_name . ' (Product ID: ' . $product->ID . ')');
+                $errors++;
+                continue;
+            }
+            
+            // Assign brand to product (cast to int to avoid numeric categories)
+            $result = wp_set_object_terms($product->ID, (int)$brand->term_id, 'pwb-brand', false);
+            
+            if (is_wp_error($result)) {
+                error_log('[Generate Products - Brands] Failed to assign brand to product ' . $product->ID . ': ' . $result->get_error_message());
+                $errors++;
+            } else {
+                error_log('[Generate Products - Brands] Assigned brand "' . $org_name . '" to product "' . $product->post_title . '" (ID: ' . $product->ID . ')');
+                $assigned++;
+            }
+        }
+        
+        error_log('[Generate Products - Brands] Product brand assignment completed. Assigned: ' . $assigned . ', Errors: ' . $errors);
+        
+        return array('assigned' => $assigned, 'errors' => $errors);
+    }
+    
+    /**
+     * AJAX handler for brand sync
+     */
+    public function handle_sync_brands() {
+        check_ajax_referer('render_products_nonce', 'nonce');
+        
+        if (!current_user_can('manage_woocommerce')) {
+            wp_send_json_error('Unauthorized');
+            return;
+        }
+        
+        $result = $this->sync_organizations_to_brands();
+        
+        if ($result['success']) {
+            wp_send_json_success($result);
+        } else {
+            wp_send_json_error($result);
+        }
+    }
+    
+    /**
+     * Download and attach brand image from URL
+     */
+    private function download_and_attach_brand_image($brand_id, $image_url, $brand_name) {
+        try {
+            // Include required WordPress functions for media handling
+            if (!function_exists('media_sideload_image')) {
+                require_once(ABSPATH . 'wp-admin/includes/media.php');
+                require_once(ABSPATH . 'wp-admin/includes/file.php');
+                require_once(ABSPATH . 'wp-admin/includes/image.php');
+            }
+            
+            // Download and sideload the image
+            $attachment_id = media_sideload_image($image_url, 0, $brand_name . ' logo', 'id');
+            
+            if (is_wp_error($attachment_id)) {
+                return array(
+                    'success' => false,
+                    'message' => $attachment_id->get_error_message()
+                );
+            }
+            
+            // Try multiple possible meta keys for PWB brand images
+            $meta_keys = array(
+                'pwb_brand_image',    // Perfect WooCommerce Brands
+                'thumbnail_id',       // WordPress standard
+                'brand_thumbnail_id'  // Alternative
+            );
+            
+            foreach ($meta_keys as $meta_key) {
+                update_term_meta($brand_id, $meta_key, $attachment_id);
+            }
+            
+            return array(
+                'success' => true,
+                'attachment_id' => $attachment_id,
+                'message' => 'Brand image attached successfully'
+            );
+            
+        } catch (Exception $e) {
+            return array(
+                'success' => false,
+                'message' => 'Exception: ' . $e->getMessage()
+            );
+        }
     }
 }
 
